@@ -1,0 +1,130 @@
+name: Build
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      onnxruntime_version:
+        description: "microsoft/onnxruntime tag to build (e.g. 1.24.4)"
+        required: true
+        default: "1.24.4"
+
+env:
+  # macOS floor this project's own x86_64 builds declare today -- see
+  # StreamDock's Docs/Reference/platform-support.md ("The floor after gde_gozen").
+  # Revisit together if that floor ever changes.
+  MACOSX_DEPLOYMENT_TARGET: "13.0"
+
+jobs:
+  build:
+    # x86_64 hosted runner (macos-13's replacement after its Dec 2025 retirement,
+    # available through Aug 2027).
+    runs-on: macos-15-intel
+    steps:
+      - name: Resolve onnxruntime version
+        id: version
+        run: |
+          if [ -n "${{ inputs.onnxruntime_version }}" ]; then
+            VERSION="${{ inputs.onnxruntime_version }}"
+          else
+            # Tag shape: v<onnxruntime-version>-streamdock.<n>, e.g. v1.24.4-streamdock.1
+            TAG="${GITHUB_REF_NAME}"
+            VERSION="${TAG#v}"
+            VERSION="${VERSION%%-streamdock*}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building onnxruntime v$VERSION"
+
+      - name: Checkout microsoft/onnxruntime
+        uses: actions/checkout@v4
+        with:
+          repository: microsoft/onnxruntime
+          ref: v${{ steps.version.outputs.version }}
+          submodules: recursive
+          path: onnxruntime
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build (CPU EP, x86_64, shared lib)
+        working-directory: onnxruntime
+        run: |
+          ./build.sh \
+            --config Release \
+            --build_shared_lib \
+            --parallel \
+            --skip_tests \
+            --compile_no_warning_as_error \
+            --cmake_extra_defines CMAKE_OSX_ARCHITECTURES=x86_64 \
+            --cmake_extra_defines CMAKE_OSX_DEPLOYMENT_TARGET="$MACOSX_DEPLOYMENT_TARGET"
+
+      - name: Locate and verify the built dylib
+        id: artifact
+        working-directory: onnxruntime
+        run: |
+          set -euo pipefail
+          DYLIB=$(find build/MacOS/Release -maxdepth 1 -name 'libonnxruntime.*.dylib' ! -type l | head -1)
+          if [ -z "$DYLIB" ]; then
+            echo "Could not find a built libonnxruntime.<version>.dylib" >&2
+            exit 1
+          fi
+          echo "Found: $DYLIB"
+
+          echo "--- lipo -archs ---"
+          ARCHS=$(lipo -archs "$DYLIB")
+          echo "$ARCHS"
+          if [ "$ARCHS" != "x86_64" ]; then
+            echo "Expected a pure x86_64 slice, got: $ARCHS" >&2
+            exit 1
+          fi
+
+          echo "--- vtool -show-build ---"
+          vtool -show-build "$DYLIB"
+          MINOS=$(vtool -show-build "$DYLIB" | grep -A2 LC_BUILD_VERSION | grep minos | awk '{print $2}')
+          echo "minos: $MINOS"
+          if [ "$MINOS" != "$MACOSX_DEPLOYMENT_TARGET" ]; then
+            echo "Expected minos $MACOSX_DEPLOYMENT_TARGET, got: $MINOS" >&2
+            exit 1
+          fi
+
+          # The same bug class ffmpeg-lgpl-fork hit on this exact runner family: a build that
+          # quietly links against the runner's own Homebrew/toolchain paths instead of system
+          # libraries, and only fails on a machine without them. onnxruntime builds its own
+          # dependencies from source (protobuf, abseil, onnx, re2, nsync as submodules) rather
+          # than via Homebrew, but verify rather than assume.
+          echo "--- otool -L (checking for host-specific paths) ---"
+          otool -L "$DYLIB"
+          if otool -L "$DYLIB" | tail -n +2 | grep -E '/usr/local/|/opt/homebrew/|/Users/'; then
+            echo "Found a host-specific dynamic dependency -- would not load on another machine." >&2
+            exit 1
+          fi
+
+          mkdir -p ../dist
+          cp "$DYLIB" ../dist/libonnxruntime.dylib
+          cp LICENSE ../dist/LICENSE.onnxruntime
+          echo "dylib=dist/libonnxruntime.dylib" >> "$GITHUB_OUTPUT"
+
+      - name: Package
+        run: |
+          cd dist
+          tar -czf ../onnxruntime-osx-x64-${{ steps.version.outputs.version }}.tar.gz \
+            libonnxruntime.dylib LICENSE.onnxruntime
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: onnxruntime-osx-x64
+          path: onnxruntime-osx-x64-*.tar.gz
+
+      - name: Create release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            onnxruntime-osx-x64-${{ steps.version.outputs.version }}.tar.gz \
+            --title "${GITHUB_REF_NAME}" \
+            --notes "ONNX Runtime ${{ steps.version.outputs.version }} CPU EP, built from source for osx-x64 (microsoft/onnxruntime ships no Intel-Mac natives since 1.24.1). See README.md."
