@@ -53,6 +53,11 @@ jobs:
       - name: Build (CPU EP, x86_64, shared lib)
         working-directory: onnxruntime
         run: |
+          # --skip_tests only skips running ctest -- the gtest binaries still get built
+          # unless onnxruntime_BUILD_UNIT_TESTS=OFF, and one of them (test_logging_apis.cc)
+          # pulls in <format>'s float std::to_chars, which libc++ gates to macOS 13.3+ --
+          # a hard compile error at our 13.0 deployment target. We don't need the test
+          # suite for a packaging-only build anyway.
           ./build.sh \
             --config Release \
             --build_shared_lib \
@@ -60,7 +65,8 @@ jobs:
             --skip_tests \
             --compile_no_warning_as_error \
             --cmake_extra_defines CMAKE_OSX_ARCHITECTURES=x86_64 \
-            --cmake_extra_defines CMAKE_OSX_DEPLOYMENT_TARGET="$MACOSX_DEPLOYMENT_TARGET"
+            --cmake_extra_defines CMAKE_OSX_DEPLOYMENT_TARGET="$MACOSX_DEPLOYMENT_TARGET" \
+            --cmake_extra_defines onnxruntime_BUILD_UNIT_TESTS=OFF
 
       - name: Locate and verify the built dylib
         id: artifact
