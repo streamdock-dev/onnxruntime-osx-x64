@@ -90,7 +90,7 @@ jobs:
 
           echo "--- vtool -show-build ---"
           vtool -show-build "$DYLIB"
-          MINOS=$(vtool -show-build "$DYLIB" | grep -A2 LC_BUILD_VERSION | grep minos | awk '{print $2}')
+          MINOS=$(vtool -show-build "$DYLIB" | grep -A4 LC_BUILD_VERSION | grep minos | awk '{print $2}')
           echo "minos: $MINOS"
           if [ "$MINOS" != "$MACOSX_DEPLOYMENT_TARGET" ]; then
             echo "Expected minos $MACOSX_DEPLOYMENT_TARGET, got: $MINOS" >&2
