@@ -130,7 +130,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # --repo is required here: this workflow never checks out this repo itself (only
+          # microsoft/onnxruntime, into the "onnxruntime" subdirectory), so $GITHUB_WORKSPACE
+          # isn't a git repo and gh can't infer which repo to create the release in.
           gh release create "${GITHUB_REF_NAME}" \
             onnxruntime-osx-x64-${{ steps.version.outputs.version }}.tar.gz \
+            --repo "${{ github.repository }}" \
             --title "${GITHUB_REF_NAME}" \
             --notes "ONNX Runtime ${{ steps.version.outputs.version }} CPU EP, built from source for osx-x64 (microsoft/onnxruntime ships no Intel-Mac natives since 1.24.1). See README.md."
